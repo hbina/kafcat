@@ -1,26 +1,18 @@
-use kafcat::configs::AppConfig;
-use kafcat::configs::SerdeFormat;
-use kafcat::error::KafcatError;
-use kafcat::interface::KafkaInterface;
-use kafcat::interface::KafkaProducer;
-use kafcat::message::KafkaMessage;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::BufReader;
+use kafcat::{
+    configs::{KafkaProducerConfig, SerdeFormat},
+    error::KafcatError,
+    interface::KafkaProducer,
+    message::KafkaMessage,
+    rdkafka_impl::RdkafkaProducer,
+};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
-pub async fn run_async_produce_topic<Interface: KafkaInterface>(
-    _interface: Interface,
-    config: AppConfig,
-) -> Result<(), KafcatError> {
-    let producer_config = config
-        .producer_kafka
-        .expect("Must specify output kafka config");
-    let producer: Interface::Producer =
-        Interface::Producer::from_config(producer_config.clone()).await;
+pub async fn run_async_produce_topic(config: KafkaProducerConfig) -> Result<(), KafcatError> {
+    let producer = RdkafkaProducer::from_config(config.clone()).await;
     let reader = BufReader::new(tokio::io::stdin());
     let mut lines = reader.lines();
-    let key_delim = producer_config.key_delim;
-
-    match producer_config.format {
+    let key_delim = config.key_delim;
+    match config.format {
         SerdeFormat::Text => {
             while let Some(line) = lines.next_line().await? {
                 if let Some(index) = line.find(&key_delim) {

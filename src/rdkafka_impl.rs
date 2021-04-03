@@ -1,29 +1,17 @@
-use crate::configs::KafkaConsumerConfig;
-use crate::configs::KafkaOffset;
-use crate::configs::KafkaProducerConfig;
-use crate::interface::KafkaConsumer;
-use crate::interface::KafkaInterface;
-use crate::interface::KafkaProducer;
-use crate::message::KafkaMessage;
-use crate::Result;
-use rdkafka::config::RDKafkaLogLevel;
-use rdkafka::consumer::Consumer;
-use rdkafka::consumer::StreamConsumer;
-use rdkafka::error::KafkaResult;
-use rdkafka::producer::FutureProducer;
-use rdkafka::producer::FutureRecord;
-use rdkafka::ClientConfig;
-use rdkafka::Message;
-use rdkafka::Offset;
-use rdkafka::TopicPartitionList;
+use crate::{
+    configs::{KafkaConsumerConfig, KafkaOffset, KafkaProducerConfig},
+    interface::{KafkaConsumer, KafkaProducer},
+    message::KafkaMessage,
+    KafResult,
+};
+use rdkafka::{
+    config::RDKafkaLogLevel,
+    consumer::{Consumer, StreamConsumer},
+    producer::{FutureProducer, FutureRecord},
+    ClientConfig, Message, Offset, TopicPartitionList,
+};
 use std::time::Duration;
 use tokio::task::block_in_place;
-
-pub struct RdKafka {}
-impl KafkaInterface for RdKafka {
-    type Consumer = RdkafkaConsumer;
-    type Producer = RdkafkaProducer;
-}
 
 pub struct RdkafkaConsumer {
     stream: StreamConsumer,
@@ -54,7 +42,7 @@ impl KafkaConsumer for RdkafkaConsumer {
         RdkafkaConsumer { stream, config }
     }
 
-    async fn set_offset_and_subscribe(&self, offset: KafkaOffset) -> Result<()> {
+    async fn set_offset_and_subscribe(&self, offset: KafkaOffset) -> KafResult<()> {
         info!("set offset {:?}", offset);
         let mut tpl = TopicPartitionList::new();
         let partition = self.config.partition.unwrap_or(0);
@@ -68,7 +56,7 @@ impl KafkaConsumer for RdkafkaConsumer {
             KafkaOffset::OffsetInterval(b, _) => Offset::Offset(b as _),
             KafkaOffset::TimeInterval(b, _e) => {
                 let consumer = &self.stream;
-                let r: KafkaResult<_> = block_in_place(|| {
+                let r: KafResult<_> = block_in_place(|| {
                     let mut tpl_b = TopicPartitionList::new();
                     tpl_b.add_partition_offset(&topic, partition, Offset::Offset(b as _))?;
                     tpl_b = consumer.offsets_for_times(tpl_b, Duration::from_secs(1))?;
@@ -84,11 +72,11 @@ impl KafkaConsumer for RdkafkaConsumer {
         Ok(())
     }
 
-    async fn get_offset(&self) -> Result<i64> {
+    async fn get_offset(&self) -> KafResult<i64> {
         unimplemented!()
     }
 
-    async fn get_watermarks(&self) -> Result<(i64, i64)> {
+    async fn get_watermarks(&self) -> KafResult<(i64, i64)> {
         let stream = &self.stream;
         let config = self.config.clone();
         let watermarks = block_in_place(|| {
@@ -101,15 +89,15 @@ impl KafkaConsumer for RdkafkaConsumer {
         Ok(watermarks)
     }
 
-    async fn recv(&self) -> Result<KafkaMessage> {
+    async fn recv(&self) -> KafResult<KafkaMessage> {
         let locker = &self.stream;
 
         match locker.recv().await {
             Ok(x) => {
                 let msg = x.detach();
                 Ok(KafkaMessage {
-                    key: msg.key().map(Vec::from).unwrap_or(vec![]),
-                    payload: msg.payload().map(Vec::from).unwrap_or(vec![]),
+                    key: msg.key().map(Vec::from).unwrap_or_default(),
+                    payload: msg.payload().map(Vec::from).unwrap_or_default(),
                     timestamp: msg.timestamp().to_millis().unwrap(),
                     ..KafkaMessage::default() // TODO headers
                 })
@@ -140,14 +128,14 @@ impl KafkaProducer for RdkafkaProducer {
         }
     }
 
-    async fn write_one(&self, msg: KafkaMessage) -> Result<()> {
+    async fn write_one(&self, msg: KafkaMessage) -> KafResult<()> {
         let mut record = FutureRecord::to(&self.config.topic);
         let key = msg.key;
-        if key.len() > 0 {
+        if !key.is_empty() {
             record = record.key(&key);
         }
         let payload = msg.payload;
-        if payload.len() > 0 {
+        if !payload.is_empty() {
             record = record.payload(&payload)
         }
         self.producer

@@ -1,6 +1,5 @@
 pub mod coder;
 pub mod configs;
-pub mod connection;
 pub mod error;
 pub mod input;
 pub mod interface;
@@ -16,7 +15,7 @@ extern crate log;
 
 use crate::error::KafcatError;
 
-type Result<T> = std::result::Result<T, KafcatError>;
+type KafResult<T> = std::result::Result<T, KafcatError>;
 
 use chrono::DateTime;
 use chrono::Local;

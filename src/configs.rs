@@ -3,11 +3,8 @@ use clap::App;
 use clap::AppSettings;
 use clap::Arg;
 use clap::ArgMatches;
-use log::LevelFilter;
 use regex::Regex;
 use std::str::FromStr;
-use strum::Display;
-use strum::EnumString;
 
 const GROUP_ID_DEFAULT: &str = "kafcat";
 const BROKERS_DEFAULT: &str = "localhost:9092";
@@ -165,47 +162,6 @@ pub fn get_arg_matcher() -> App<'static> {
         )
 }
 
-#[derive(Debug, Copy, Clone, EnumString, Display)]
-#[strum(serialize_all = "lowercase")]
-pub enum WorkingMode {
-    Unspecified,
-    Consumer,
-    Producer,
-    Metadata,
-    Query,
-    Copy,
-}
-
-impl WorkingMode {
-    pub fn should_have_input_kafka(self) -> bool {
-        match self {
-            WorkingMode::Unspecified => false,
-            WorkingMode::Consumer => true,
-            WorkingMode::Producer => false,
-            WorkingMode::Metadata => true,
-            WorkingMode::Query => true,
-            WorkingMode::Copy => true,
-        }
-    }
-
-    pub fn should_have_output_kafka(self) -> bool {
-        match self {
-            WorkingMode::Unspecified => false,
-            WorkingMode::Consumer => false,
-            WorkingMode::Producer => true,
-            WorkingMode::Metadata => false,
-            WorkingMode::Query => false,
-            WorkingMode::Copy => true,
-        }
-    }
-}
-
-impl Default for WorkingMode {
-    fn default() -> Self {
-        Self::Unspecified
-    }
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum KafkaOffset {
     Beginning,
@@ -263,63 +219,6 @@ impl FromStr for SerdeFormat {
         })
     }
 }
-
-#[rustfmt::skip]
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub working_mode:   WorkingMode,
-    pub consumer_kafka: Option<KafkaConsumerConfig>,
-    pub producer_kafka: Option<KafkaProducerConfig>,
-    pub log_level:      LevelFilter,
-}
-
-impl AppConfig {
-    pub fn from_args(args: Vec<&str>) -> Self {
-        let matches = get_arg_matcher().get_matches_from(args);
-
-        let kafcat_log_env = std::env::var("KAFCAT_LOG").ok();
-        let log_level = matches
-            .value_of("log")
-            .or(kafcat_log_env.as_ref().map(|x| x.as_str()))
-            .map(|x| LevelFilter::from_str(x).expect("Cannot parse log level"))
-            .unwrap_or(LevelFilter::Info);
-
-        let mut this = AppConfig {
-            working_mode: WorkingMode::Unspecified,
-            consumer_kafka: None,
-            producer_kafka: None,
-            log_level,
-        };
-        match matches.subcommand() {
-            Some(("consume", matches)) => {
-                this.working_mode = WorkingMode::Consumer;
-                this.consumer_kafka = Some(KafkaConsumerConfig::from_matches(matches));
-            }
-            Some(("produce", matches)) => {
-                this.working_mode = WorkingMode::Producer;
-                this.producer_kafka = Some(KafkaProducerConfig::from_matches(matches));
-            }
-            Some(("copy", matches)) => {
-                this.working_mode = WorkingMode::Copy;
-                let from = vec!["kafka"]
-                    .into_iter()
-                    .chain(matches.values_of("from").expect("Must specify from"));
-                let to = vec!["kafka"]
-                    .into_iter()
-                    .chain(matches.values_of("to").expect("Must specify to"));
-
-                let consumer = consume_subcommand().get_matches_from(from);
-                let producer = produce_subcommand().get_matches_from(to);
-                this.consumer_kafka = Some(KafkaConsumerConfig::from_matches(&consumer));
-                this.producer_kafka = Some(KafkaProducerConfig::from_matches(&producer));
-            }
-            _ => unreachable!(),
-        }
-
-        this
-    }
-}
-
 #[rustfmt::skip]
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct KafkaConsumerConfig {
@@ -337,6 +236,11 @@ pub struct KafkaConsumerConfig {
 }
 
 impl KafkaConsumerConfig {
+    pub fn from_args(args: &[&str]) -> Self {
+        let matches = get_arg_matcher().get_matches_from(args);
+        KafkaConsumerConfig::from_matches(&matches)
+    }
+
     pub fn from_matches(matches: &ArgMatches) -> KafkaConsumerConfig {
         let brokers = matches
             .value_of("brokers")
@@ -406,7 +310,13 @@ pub struct KafkaProducerConfig {
     pub key_delim: String,
     pub format:    SerdeFormat,
 }
+
 impl KafkaProducerConfig {
+    pub fn from_args(args: &[&str]) -> Self {
+        let matches = get_arg_matcher().get_matches_from(args);
+        KafkaProducerConfig::from_matches(&matches)
+    }
+
     pub fn from_matches(matches: &ArgMatches) -> KafkaProducerConfig {
         let brokers = matches
             .value_of("brokers")
@@ -424,8 +334,8 @@ impl KafkaProducerConfig {
         let key_delim = matches.value_of("key-delimiter").unwrap().to_owned();
         let format = matches.value_of("format").expect("Must specify format");
         KafkaProducerConfig {
-            brokers: brokers.to_owned(),
-            group_id: group_id.clone(),
+            brokers,
+            group_id,
             partition,
             topic,
             msg_delim,
@@ -451,17 +361,23 @@ impl Default for KafkaProducerConfig {
 }
 #[cfg(test)]
 mod tests {
-    use crate::configs::AppConfig;
     use crate::configs::KafkaConsumerConfig;
     use crate::configs::KafkaOffset;
     use crate::configs::KafkaProducerConfig;
 
     #[test]
     fn consumer_config() {
-        let config =
-            AppConfig::from_args(vec!["kafcat", "-C", "-b", "localhost", "-t", "topic", "-e"]);
+        let config = KafkaConsumerConfig::from_args(&vec![
+            "kafcat",
+            "-C",
+            "-b",
+            "localhost",
+            "-t",
+            "topic",
+            "-e",
+        ]);
         assert_eq!(
-            config.consumer_kafka.unwrap(),
+            config,
             KafkaConsumerConfig {
                 brokers: "localhost".to_string(),
                 group_id: "kafcat".to_string(),
@@ -475,9 +391,10 @@ mod tests {
     }
     #[test]
     fn producer_config() {
-        let config = AppConfig::from_args(vec!["kafcat", "-P", "-b", "localhost", "-t", "topic"]);
+        let config =
+            KafkaProducerConfig::from_args(&vec!["kafcat", "-P", "-b", "localhost", "-t", "topic"]);
         assert_eq!(
-            config.producer_kafka.unwrap(),
+            config,
             KafkaProducerConfig {
                 brokers: "localhost".to_string(),
                 group_id: "kafcat".to_string(),
@@ -489,7 +406,7 @@ mod tests {
     }
     #[test]
     fn copy_config() {
-        let config = AppConfig::from_args(vec![
+        let config = vec![
             "kafcat",
             "copy",
             "-b",
@@ -502,9 +419,11 @@ mod tests {
             "localhost2",
             "-t",
             "topic2",
-        ]);
+        ];
+        let consumer_config = KafkaConsumerConfig::from_args(&config);
+        let producer_config = KafkaProducerConfig::from_args(&config);
         assert_eq!(
-            config.consumer_kafka.unwrap(),
+            consumer_config,
             KafkaConsumerConfig {
                 brokers: "localhost1".to_string(),
                 group_id: "kafcat".to_string(),
@@ -516,7 +435,7 @@ mod tests {
             }
         );
         assert_eq!(
-            config.producer_kafka.unwrap(),
+            producer_config,
             KafkaProducerConfig {
                 brokers: "localhost2".to_string(),
                 group_id: "kafcat".to_string(),
